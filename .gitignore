@@ -16,6 +16,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+!.env.op.example
 *.pem
 *.key
 
@@ -69,3 +70,6 @@ build/
 Icon
 ehthumbs.db
 Desktop.ini
+
+# Other
+mcap_messages_out/

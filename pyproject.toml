@@ -1,0 +1,25 @@
+[project]
+name = "tigris-mcap-benchmark"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Sachit Vithaldas",email = "macintoshsac@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcap>=1.2.1",
+    "boto3>=1.34.0",
+]
+
+[tool.poetry]
+packages = [{include = "tigris_mcap_benchmark", from = "src"}]
+
+[project.scripts]
+"tigris-mcap-benchmark" = "tigris_mcap_benchmark.cli:main"
+"download-benchmark" = "tigris_mcap_benchmark.download_benchmark:main"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
