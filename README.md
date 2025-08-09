@@ -61,8 +61,7 @@ This project provides two CLI tools:
 
 ### Outputs
 - Extracted message binaries in `--out-dir` (default `./mcap_messages_out`), named like `00000042__ch3__topic_name__log1712593492000000000.bin`.
-- Per-file upload lines printed to stdout with size, duration, and Mb/s.
-- Summary line with totals and averages.
+- Pretty-printed tables to stdout for per-file uploads and a summary (totals, averages, and rates). Total time reflects wall-clock elapsed.
 - CSV of per-file results at `--csv` path (default `<out-dir>/upload_results.csv`).
 
 ### Notes
@@ -76,26 +75,25 @@ This project provides two CLI tools:
 ## Download CLI
 
 ### Usage
-`poetry run download-benchmark [bucket] [--bucket NAME] [--prefix PREFIX] [--limit N] [--region REGION] [--profile PROFILE] [--endpoint-url URL] [--path-style] [--tmp-dir DIR] [--csv PATH] [--concurrency N]`
+`poetry run download-benchmark [bucket] [--bucket NAME] [--prefix PREFIX] [--limit N] [--region REGION] [--profile PROFILE] [--endpoint-url URL] [--path-style] [--tmp-dir DIR] [--csv PATH] [--concurrency N] [--persist]`
 
 ### Examples
-- Download all objects under a prefix to a temporary directory:
+- Download all objects under a prefix to a temporary directory (files are deleted after benchmarking by default):
   `poetry run download-benchmark my-bucket --prefix test/run1`
 
 - Limit to 200 objects and write a CSV of results:
   `poetry run download-benchmark my-bucket --prefix test/run1 --limit 200 --csv downloads.csv`
 
-- Download concurrently with 16 workers:
-  `poetry run download-benchmark my-bucket --prefix test/run1 --concurrency 16`
+- Download concurrently with 16 workers and keep files:
+  `poetry run download-benchmark my-bucket --prefix test/run1 --concurrency 16 --persist`
 
 - Use an S3-compatible endpoint (e.g., MinIO):
   `poetry run download-benchmark my-bucket --endpoint-url http://localhost:9000 --path-style --region us-east-1`
 
 ### Outputs
-- Files downloaded under a temporary directory (auto-created) or `--tmp-dir` if provided, mirroring S3 keys.
-- Per-file lines with first-byte time, total time, size, and Mb/s.
-- Summary line with totals and averages.
-- CSV of per-file results at `--csv` path when provided.
+- By default, downloaded files are deleted after benchmarking. Pass `--persist` to keep them.
+- Files (when persisted) are stored under a temporary directory (auto-created) or `--tmp-dir` if provided, mirroring S3 keys.
+- Results are written to a CSV file (no pretty table is printed). Use `--csv PATH` to choose a destination; otherwise a default `./download_results.csv` is written.
 
 ### Notes
 - Credentials for the download benchmark are taken from the environment or profile (it does not take `--op-*` 1Password flags). See the 1Password section below for ways to set env vars via `op`.

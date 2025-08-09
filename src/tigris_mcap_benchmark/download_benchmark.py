@@ -24,6 +24,41 @@ class DownloadResult:
     path: Path
 
 
+class SimpleProgressBar:
+    def __init__(self, total: int, width: int = 40):
+        self.total = max(0, int(total))
+        self.width = max(10, int(width))
+        self.completed = 0
+        self.start = time.perf_counter()
+        self._finished = False
+
+    def _render(self) -> str:
+        total = max(1, self.total)
+        pct = self.completed / total
+        filled = int(self.width * pct)
+        bar = "#" * filled + "." * (self.width - filled)
+        elapsed = time.perf_counter() - self.start
+        return f"[{bar}] {self.completed}/{self.total} {pct*100:5.1f}% elapsed {elapsed:6.1f}s"
+
+    def update(self, n: int = 1) -> None:
+        if self._finished:
+            return
+        self.completed = min(self.total, self.completed + max(0, int(n)))
+        sys.stdout.write("\r" + self._render())
+        sys.stdout.flush()
+        if self.completed >= self.total:
+            self.finish()
+
+    def finish(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        # Ensure full bar on finish
+        self.completed = max(self.completed, self.total)
+        sys.stdout.write("\r" + self._render() + "\n")
+        sys.stdout.flush()
+
+
 def resolve_bucket(args: argparse.Namespace) -> Optional[str]:
     # Priority: --bucket flag > positional arg > env S3_BUCKET > config.DEFAULT_BUCKET
     return args.bucket_flag or args.bucket or os.getenv("S3_BUCKET") or (cfg.DEFAULT_BUCKET or None)
@@ -150,6 +185,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=1,
         help="Concurrent downloads via asyncio.to_thread (1 = sequential)",
     )
+    p.add_argument(
+        "--persist",
+        action="store_true",
+        help="Keep downloaded files on disk (default deletes them after benchmarking)",
+    )
     return p.parse_args(argv)
 
 
@@ -165,18 +205,15 @@ async def download_all_async(
     lock = asyncio.Lock()
 
     total = len(objects)
+    progress = SimpleProgressBar(total)
 
     async def do_one(idx: int, key: str, size: int) -> None:
         async with sem:
-            print(f"[{idx}/{total}] GET {key} ({size}B)...", flush=True)
             r = await asyncio.to_thread(download_one, s3, bucket, key, dest_dir)
-            mbps = (r.size_bytes * 8 / 1_000_000) / r.total_time_sec if r.total_time_sec > 0 else 0.0
-            print(
-                f"    first_byte={r.first_byte_sec:.4f}s total={r.total_time_sec:.4f}s size={r.size_bytes}B rate={mbps:.2f} Mb/s -> {r.path}",
-                flush=True,
-            )
             async with lock:
                 results.append((idx, r))
+                # Update progress only after recording the result to maintain order
+                progress.update(1)
 
     await asyncio.gather(
         *(do_one(i, key, size) for i, (key, size) in enumerate(objects, start=1))
@@ -184,6 +221,7 @@ async def download_all_async(
 
     # Preserve original order
     results.sort(key=lambda t: t[0])
+    progress.finish()
     return [r for _, r in results]
 
 
@@ -211,6 +249,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     # Prepare destination directory
+    created_tmp_dir = False
     if args.tmp_dir:
         dest_dir = args.tmp_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +257,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         dest_dir = Path(tempfile.mkdtemp(prefix="s3_download_"))
         tmp_info = f"{dest_dir} (created)"
+        created_tmp_dir = True
 
     print(
         f"Downloading from s3://{bucket}/{args.prefix}" + ("/" if args.prefix else "") +
@@ -236,6 +276,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # Download (optionally concurrent) and measure timings
+    batch_start = time.perf_counter()
     if args.concurrency and int(args.concurrency) > 1:
         results: List[DownloadResult] = asyncio.run(
             download_all_async(
@@ -249,44 +290,51 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         results = []
         total = len(objects)
+        progress = SimpleProgressBar(total)
         for i, (key, size) in enumerate(objects, start=1):
-            print(f"[{i}/{total}] GET {key} ({size}B)...", flush=True)
             r = download_one(s3, bucket, key, dest_dir)
-            mbps = (r.size_bytes * 8 / 1_000_000) / r.total_time_sec if r.total_time_sec > 0 else 0.0
-            print(
-                f"    first_byte={r.first_byte_sec:.4f}s total={r.total_time_sec:.4f}s size={r.size_bytes}B rate={mbps:.2f} Mb/s -> {r.path}",
-                flush=True,
-            )
             results.append(r)
+            progress.update(1)
+        progress.finish()
+    wall_clock_total = time.perf_counter() - batch_start
 
     # Summary
     total_bytes = sum(r.size_bytes for r in results)
     avg_first_byte = sum(r.first_byte_sec for r in results) / len(results)
-    total_time = sum(r.total_time_sec for r in results)
-    avg_total_time = total_time / len(results)
+    # Use wall-clock elapsed for total_time; keep per-file average based on individual timings
+    total_time = wall_clock_total
+    avg_total_time = (sum(r.total_time_sec for r in results) / len(results))
     avg_size = total_bytes / len(results)
     avg_mbps = ((avg_size * 8) / 1_000_000) / avg_total_time if avg_total_time > 0 else 0.0
 
-    print(
-        "Summary: files={files} total_bytes={total_bytes} total_time={total_time:.3f}s "
-        "avg_first_byte={avg_first_byte:.4f}s avg_total={avg_total:.4f}s avg_size={avg_size:.0f}B avg_rate={avg_mbps:.2f} Mb/s".format(
-            files=len(results),
-            total_bytes=total_bytes,
-            total_time=total_time,
-            avg_first_byte=avg_first_byte,
-            avg_total=avg_total_time,
-            avg_size=avg_size,
-            avg_mbps=avg_mbps,
-        )
-    )
+    # Results to CSV only (no stdout pretty printing)
+    csv_path: Path = args.csv or Path("./download_results.csv")
+    write_csv(results, csv_path)
+    print(f"\nWrote CSV results to: {csv_path}")
 
-    # Optional CSV
-    if args.csv:
-        write_csv(results, args.csv)
-        print(f"Wrote CSV results to: {args.csv}")
+    # Cleanup behavior: delete downloaded files by default unless --persist is passed
+    if not args.persist:
+        # Best-effort cleanup of files we just downloaded
+        for r in results:
+            try:
+                r.path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        # If we created a temporary directory, remove it entirely
+        if created_tmp_dir:
+            try:
+                import shutil
 
-    # Print the destination directory for convenience
-    print(f"Downloaded files under: {dest_dir}")
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                print(f"Cleaned up temporary directory: {dest_dir}")
+            except Exception:
+                # If removal fails, at least inform the user where files were
+                print(f"Downloaded files were cleaned up, but directory remains: {dest_dir}")
+        else:
+            print(f"Deleted downloaded files in: {dest_dir}. Use --persist to keep them.")
+    else:
+        # Print the destination directory for convenience
+        print(f"Downloaded files under: {dest_dir}")
     return 0
 
 

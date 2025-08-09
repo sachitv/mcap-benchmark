@@ -467,6 +467,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stderr.flush()
     except Exception:
         pass
+    # Measure wall-clock time for the entire upload batch
+    batch_start = time.perf_counter()
     if args.concurrency and int(args.concurrency) > 1:
         results = asyncio.run(
             upload_files_async(
@@ -492,22 +494,92 @@ def main(argv: Optional[List[str]] = None) -> int:
             use_path_style=use_path_style,
             credentials=credentials,
         )
+    wall_clock_total = time.perf_counter() - batch_start
 
-    # Per-file summary lines
+    # Pretty print per-file results and summary tables
+    def human_size(n: int) -> str:
+        units = ["B", "KB", "MB", "GB", "TB"]
+        size = float(n)
+        i = 0
+        while size >= 1024 and i < len(units) - 1:
+            size /= 1024
+            i += 1
+        if i == 0:
+            return f"{int(size)}{units[i]}"
+        return f"{size:.2f}{units[i]}"
+
+    def shorten(text: str, max_len: int) -> str:
+        if len(text) <= max_len:
+            return text
+        if max_len <= 3:
+            return text[:max_len]
+        keep = max_len - 3
+        left = (keep + 1) // 2
+        right = keep - left
+        return text[:left] + "..." + text[-right:]
+
+    def make_table(headers: list[str], rows: list[list[str]], right_align: set[int] | None = None) -> str:
+        right_align = right_align or set()
+        cols = len(headers)
+        widths = [len(h) for h in headers]
+        for row in rows:
+            for c in range(cols):
+                widths[c] = max(widths[c], len(row[c]))
+
+        def sep(ch: str = "-") -> str:
+            parts = ["+" + (ch * (w + 2)) for w in widths]
+            return "".join(parts) + "+"
+
+        def fmt_row(row: list[str]) -> str:
+            cells: list[str] = []
+            for c in range(cols):
+                cell = row[c]
+                if c in right_align:
+                    cells.append(f" {cell.rjust(widths[c])} ")
+                else:
+                    cells.append(f" {cell.ljust(widths[c])} ")
+            return "|" + "|".join(cells) + "|"
+
+        out: list[str] = []
+        out.append(sep("-"))
+        out.append(fmt_row(headers))
+        out.append(sep("="))
+        for r in rows:
+            out.append(fmt_row(r))
+        out.append(sep("-"))
+        return "\n".join(out)
+
+    # Per-file table
+    file_headers = ["index", "key", "size", "time_s", "throughput_Mb/s"]
+    file_rows: list[list[str]] = []
     for r in results:
         mbps = (r.size_bytes * 8 / 1_000_000) / r.duration_sec if r.duration_sec > 0 else 0.0
-        print(
-            f"uploaded index={r.index} key={r.s3_key} size={r.size_bytes}B time={r.duration_sec:.4f}s rate={mbps:.2f} Mb/s"
+        file_rows.append(
+            [
+                str(r.index),
+                shorten(r.s3_key, 40),
+                human_size(r.size_bytes),
+                f"{r.duration_sec:.4f}",
+                f"{mbps:.2f}",
+            ]
         )
+    print("\nUpload Results")
+    print(make_table(file_headers, file_rows, right_align={0, 2, 3, 4}))
 
-    # Overall summary
+    # Summary table
     summary = summarize(results)
-    print(
-        "Summary: files={files} total_bytes={total_bytes} total_time={total_time_sec:.3f}s "
-        "avg_time={avg_time_sec:.4f}s avg_size={avg_size_bytes}B avg_rate={avg_throughput_mbps:.2f} Mb/s".format(
-            **summary
-        )
-    )
+    summary["total_time_sec"] = wall_clock_total
+    summary_headers = ["metric", "value"]
+    summary_rows = [
+        ["files", str(summary["files"])],
+        ["total_bytes", str(summary["total_bytes"])],
+        ["total_time_s", f"{summary['total_time_sec']:.3f}"],
+        ["avg_time_s", f"{summary['avg_time_sec']:.4f}"],
+        ["avg_size", human_size(int(summary["avg_size_bytes"]))],
+        ["avg_rate_Mb/s", f"{summary['avg_throughput_mbps']:.2f}"],
+    ]
+    print("\nSummary")
+    print(make_table(summary_headers, summary_rows, right_align={1}))
 
     # CSV output
     csv_path = args.csv or (out_dir / "upload_results.csv")
