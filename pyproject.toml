@@ -13,11 +13,11 @@ dependencies = [
 ]
 
 [tool.poetry]
-packages = [{include = "tigris_mcap_benchmark", from = "src"}]
+packages = [{include = "mcap_benchmark", from = "src"}]
 
 [project.scripts]
-"tigris-mcap-benchmark" = "tigris_mcap_benchmark.cli:main"
-"download-benchmark" = "tigris_mcap_benchmark.download_benchmark:main"
+"upload-benchmark" = "mcap_benchmark.upload_benchmark:main"
+"download-benchmark" = "mcap_benchmark.download_benchmark:main"
 
 
 [build-system]

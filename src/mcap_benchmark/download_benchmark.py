@@ -158,6 +158,62 @@ def write_csv(results: List[DownloadResult], csv_path: Path) -> None:
             w.writerow([r.key, r.size_bytes, f"{r.first_byte_sec:.6f}", f"{r.total_time_sec:.6f}", f"{mbps:.3f}", str(r.path)])
 
 
+def _human_bytes(n: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    f = float(max(0, int(n)))
+    for u in units:
+        if f < 1024.0 or u == units[-1]:
+            return f"{f:,.2f} {u}"
+        f /= 1024.0
+    return f"{f:,.2f} TB"
+
+
+def _percentile(sorted_vals: List[float], p: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    p = min(max(p, 0.0), 100.0)
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    # Nearest-rank (Excel style)
+    import math
+
+    rank = max(1, int(math.ceil(p / 100.0 * len(sorted_vals))))
+    return sorted_vals[rank - 1]
+
+
+def print_pretty_summary(results: List[DownloadResult], wall_clock_total: float) -> None:
+    n = len(results)
+    total_bytes = sum(r.size_bytes for r in results)
+    overall_mbps = ((total_bytes * 8) / 1_000_000) / wall_clock_total if wall_clock_total > 0 else 0.0
+
+    first_bytes = sorted(r.first_byte_sec for r in results)
+    totals = sorted(r.total_time_sec for r in results)
+    sizes = sorted(r.size_bytes for r in results)
+
+    avg_first = sum(first_bytes) / n
+    avg_total = sum(totals) / n
+    avg_size = sum(sizes) / n
+    avg_mbps = sum(((r.size_bytes * 8) / 1_000_000) / r.total_time_sec for r in results if r.total_time_sec > 0) / n
+
+    lines = []
+    lines.append("")
+    lines.append("=== Download Benchmark Summary ===")
+    lines.append(f"Objects:           {n}")
+    lines.append(f"Total Size:        {_human_bytes(total_bytes)}")
+    lines.append(f"Wall Clock:        {wall_clock_total:,.3f} s")
+    lines.append(f"Avg Size:          {_human_bytes(int(avg_size))}")
+    lines.append(
+        "First Byte:       "
+        f"avg={avg_first*1000:,.1f} ms  min={first_bytes[0]*1000:,.1f} ms  p95={_percentile(first_bytes,95)*1000:,.1f} ms  max={first_bytes[-1]*1000:,.1f} ms"
+    )
+    lines.append(
+        "Total/File:       "
+        f"avg={avg_total:,.3f} s   min={totals[0]:,.3f} s   p95={_percentile(totals,95):,.3f} s   max={totals[-1]:,.3f} s"
+    )
+    lines.append(f"Throughput:        overall={overall_mbps:,.3f} Mbps   avg/file={avg_mbps:,.3f} Mbps")
+    print("\n".join(lines))
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="tigris-mcap-download-benchmark",
@@ -307,10 +363,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     avg_size = total_bytes / len(results)
     avg_mbps = ((avg_size * 8) / 1_000_000) / avg_total_time if avg_total_time > 0 else 0.0
 
-    # Results to CSV only (no stdout pretty printing)
+    # Pretty printed summary (preserved)
+    print_pretty_summary(results, wall_clock_total)
+
+    # Also write CSV results
     csv_path: Path = args.csv or Path("./download_results.csv")
     write_csv(results, csv_path)
-    print(f"\nWrote CSV results to: {csv_path}")
+    print(f"Wrote CSV results to: {csv_path}")
 
     # Cleanup behavior: delete downloaded files by default unless --persist is passed
     if not args.persist:
