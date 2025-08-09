@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import time
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
@@ -181,7 +182,7 @@ def _percentile(sorted_vals: List[float], p: float) -> float:
     return sorted_vals[rank - 1]
 
 
-def print_pretty_summary(results: List[DownloadResult], wall_clock_total: float) -> None:
+def get_pretty_summary(results: List[DownloadResult], wall_clock_total: float) -> str:
     n = len(results)
     total_bytes = sum(r.size_bytes for r in results)
     overall_mbps = ((total_bytes * 8) / 1_000_000) / wall_clock_total if wall_clock_total > 0 else 0.0
@@ -211,7 +212,50 @@ def print_pretty_summary(results: List[DownloadResult], wall_clock_total: float)
         f"avg={avg_total:,.3f} s   min={totals[0]:,.3f} s   p95={_percentile(totals,95):,.3f} s   max={totals[-1]:,.3f} s"
     )
     lines.append(f"Throughput:        overall={overall_mbps:,.3f} Mbps   avg/file={avg_mbps:,.3f} Mbps")
-    print("\n".join(lines))
+    return "\n".join(lines)
+
+
+def print_pretty_summary(results: List[DownloadResult], wall_clock_total: float) -> None:
+    print(get_pretty_summary(results, wall_clock_total))
+
+
+def get_json_summary(results: List[DownloadResult], wall_clock_total: float) -> dict:
+    n = len(results)
+    total_bytes = sum(r.size_bytes for r in results)
+    first_bytes = sorted(r.first_byte_sec for r in results)
+    totals = sorted(r.total_time_sec for r in results)
+    avg_first = (sum(first_bytes) / n) if n else 0.0
+    avg_total = (sum(totals) / n) if n else 0.0
+    avg_size = (total_bytes / n) if n else 0
+    avg_mbps = (
+        sum(((r.size_bytes * 8) / 1_000_000) / r.total_time_sec for r in results if r.total_time_sec > 0) / n
+        if n
+        else 0.0
+    )
+    overall_mbps = ((total_bytes * 8) / 1_000_000) / wall_clock_total if wall_clock_total > 0 else 0.0
+
+    return {
+        "objects": n,
+        "total_bytes": total_bytes,
+        "wall_clock_total_sec": wall_clock_total,
+        "avg_size_bytes": int(avg_size),
+        "first_byte_sec": {
+            "avg": avg_first,
+            "min": first_bytes[0] if first_bytes else 0.0,
+            "p95": _percentile(first_bytes, 95) if first_bytes else 0.0,
+            "max": first_bytes[-1] if first_bytes else 0.0,
+        },
+        "total_file_time_sec": {
+            "avg": avg_total,
+            "min": totals[0] if totals else 0.0,
+            "p95": _percentile(totals, 95) if totals else 0.0,
+            "max": totals[-1] if totals else 0.0,
+        },
+        "throughput_mbps": {
+            "overall": overall_mbps,
+            "avg_file": avg_mbps,
+        },
+    }
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -245,6 +289,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--persist",
         action="store_true",
         help="Keep downloaded files on disk (default deletes them after benchmarking)",
+    )
+    p.add_argument(
+        "--summary",
+        type=Path,
+        default=None,
+        help="Write JSON summary to file (stdout remains pretty text)",
     )
     return p.parse_args(argv)
 
@@ -363,8 +413,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     avg_size = total_bytes / len(results)
     avg_mbps = ((avg_size * 8) / 1_000_000) / avg_total_time if avg_total_time > 0 else 0.0
 
-    # Pretty printed summary (preserved)
-    print_pretty_summary(results, wall_clock_total)
+    # Summary output: write JSON to file if requested, else print pretty text
+    if args.summary:
+        summary_json = get_json_summary(results, wall_clock_total)
+        args.summary.write_text(json.dumps(summary_json, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote summary to: {args.summary}")
+    else:
+        print(get_pretty_summary(results, wall_clock_total))
 
     # Also write CSV results
     csv_path: Path = args.csv or Path("./download_results.csv")

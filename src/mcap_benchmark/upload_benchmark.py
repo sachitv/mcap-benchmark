@@ -4,6 +4,7 @@ import csv
 import os
 import sys
 import time
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -375,6 +376,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Path to write a CSV of per-file upload results (defaults to <out-dir>/upload_results.csv)",
     )
+    p.add_argument(
+        "--summary",
+        type=Path,
+        default=None,
+        help="Write JSON summary to file (stdout remains pretty text)",
+    )
     return p.parse_args(argv)
 
 
@@ -578,11 +585,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         ["avg_size", human_size(int(summary["avg_size_bytes"]))],
         ["avg_rate_Mb/s", f"{summary['avg_throughput_mbps']:.2f}"],
     ]
-    print("\nSummary")
-    print(make_table(summary_headers, summary_rows, right_align={1}))
+    summary_text = "\nSummary\n" + make_table(summary_headers, summary_rows, right_align={1})
+    if args.summary:
+        args.summary.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote summary to: {args.summary}")
+    else:
+        print(summary_text)
 
-    # CSV output
-    csv_path = args.csv or (out_dir / "upload_results.csv")
+    # CSV output (match download benchmark default location)
+    csv_path = args.csv or Path("./upload_results.csv")
     write_csv(results, csv_path)
     print(f"Wrote CSV results to: {csv_path}")
 
